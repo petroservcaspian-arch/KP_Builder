@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 from fastapi import Body, FastAPI, Query
@@ -24,9 +24,10 @@ DATA_DIR = ROOT / "data"
 STATIC_DIR = ROOT / "static"
 WEB_DIR = ROOT / "web"
 OUTPUT_DIR = ROOT / "output"
+FONTS_DIR = ROOT / "fonts"
+
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# Файл базы: data/catalog.xlsx
 DATA_PATH = DATA_DIR / "catalog.xlsx"
 
 
@@ -103,7 +104,7 @@ def search(q: str = Query("", min_length=1), limit: int = 15):
         return []
     tokens = _tokenize(qn)
 
-    scored: List[tuple[float, int]] = []
+    scored: List[Tuple[float, int]] = []
     for idx, name_norm in enumerate(NAMES):
         s = _score(name_norm, qn, tokens)
         if s > 0:
@@ -157,11 +158,34 @@ def calc_totals(items: List[Dict[str, Any]], vat_rate: float = 0.0) -> Dict[str,
 
 
 # ---------------- PDF (ReportLab) ----------------
+def _pick_font_file(candidates: List[str]) -> Path:
+    for name in candidates:
+        p = FONTS_DIR / name
+        if p.exists():
+            return p
+    raise FileNotFoundError(
+        "Не найдены файлы шрифтов в папке fonts/. "
+        "Проверь, что там есть DejaVuSans.ttf и DejaVuSans-Bold.ttf "
+        "или варианты с [1], как в твоём репо."
+    )
+
+
+def _register_fonts() -> Tuple[str, str]:
+    # У тебя на GitHub файлы с [1], поэтому ищем оба варианта.
+    regular = _pick_font_file(["DejaVuSans.ttf", "DejaVuSans[1].ttf"])
+    bold = _pick_font_file(["DejaVuSans-Bold.ttf", "DejaVuSans-Bold[1].ttf"])
+
+    pdfmetrics.registerFont(TTFont("TGS-Regular", str(regular)))
+    pdfmetrics.registerFont(TTFont("TGS-Bold", str(bold)))
+    return "TGS-Regular", "TGS-Bold"
+
+
 @app.post("/api/quote/pdf")
 def make_pdf(payload: Dict[str, Any] = Body(...)):
     company = payload.get("company") or {}
     client = payload.get("client") or {}
     items = payload.get("items") or []
+
     vat_rate = to_num(payload.get("vat_rate"), 0.0)
     validity_days = int(to_num(payload.get("validity_days"), 3))
     terms = str(payload.get("payment_terms") or "")
@@ -169,27 +193,23 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     if not items:
         return JSONResponse(status_code=400, content={"error": "Пустой список товаров"})
 
+    # ---- Дефолты компании (как ты просил закрепить) ----
+    company_name = str(company.get("name") or "TENT GLOBAL SOLUTION").strip()
+    company_phone = str(company.get("phone") or "+77785665001").strip()
+    company_email = str(company.get("email") or "tentatyrau@gmail.com").strip()
+
+    # Клиент: не "компания клиента", просто "Клиент"
+    client_name = str(client.get("name") or "Клиент").strip()
+    client_contact = str(client.get("contact") or "").strip()
+    client_phone = str(client.get("phone") or "").strip()
+
     totals = calc_totals(items, vat_rate=vat_rate)
     now = datetime.now()
-    quote_no = payload.get("quote_no") or f"KP-{now:%Y%m%d-%H%M%S}"
+    quote_no = str(payload.get("quote_no") or f"KP-{now:%Y%m%d-%H%M%S}").strip()
     out_path = OUTPUT_DIR / f"{quote_no}.pdf"
 
-   # --- Шрифты (гарантированная кириллица) ---
-font_name = "DejaVu"
-font_bold = "DejaVu-Bold"
-
-FONT_DIR = ROOT / "fonts"
-
-pdfmetrics.registerFont(
-    TTFont("DejaVu", str(FONT_DIR / "DejaVuSans.ttf"))
-)
-
-pdfmetrics.registerFont(
-    TTFont("DejaVu-Bold", str(FONT_DIR / "DejaVuSans-Bold.ttf"))
-)
-
-    except Exception:
-        pass
+    # ---- Регистрируем кириллические шрифты (из fonts/) ----
+    font_name, font_bold = _register_fonts()
 
     def safe(s: Any) -> str:
         return str(s or "").strip()
@@ -237,16 +257,6 @@ pdfmetrics.registerFont(
     left = 16 * mm
     right = W - 16 * mm
 
-# ---- ШРИФТЫ ДЛЯ СЕРВЕРА ----
-font_path = ROOT / "fonts" / "DejaVuSans.ttf"
-font_bold_path = ROOT / "fonts" / "DejaVuSans-Bold.ttf"
-
-pdfmetrics.registerFont(TTFont("CustomFont", str(font_path)))
-pdfmetrics.registerFont(TTFont("CustomFontBold", str(font_bold_path)))
-
-font_name = "CustomFont"
-font_bold = "CustomFontBold"
-
     # ---------------- Шапка ----------------
     def header() -> float:
         header_h = 38 * mm
@@ -289,12 +299,12 @@ font_bold = "CustomFontBold"
         cnv.drawRightString(
             right,
             H - header_h + 6 * mm,
-            f"{safe(company.get('phone'))}   |   {safe(company.get('email'))}",
+            f"{company_phone}   |   {company_email}",
         )
 
         return H - header_h - 10 * mm
 
-    # ---------------- Новая страница ----------------
+    # ---------------- Таблица: шапка/страницы ----------------
     def table_header() -> None:
         nonlocal y
         cnv.setFillColor(BRAND_DARK)
@@ -342,35 +352,32 @@ font_bold = "CustomFontBold"
     cnv.setFont(font_bold, 10)
     cnv.drawString(left + 8, y - 10, "Поставщик")
     cnv.setFont(font_name, 9)
-    cnv.drawString(left + 8, y - 22, safe(company.get("name")))
+    cnv.drawString(left + 8, y - 22, company_name)
     cnv.setFillColor(MUTED)
-    cnv.drawString(left + 8, y - 34, f"Тел: {safe(company.get('phone'))}")
-    cnv.drawString(left + 8, y - 44, f"Email: {safe(company.get('email'))}")
+    cnv.drawString(left + 8, y - 34, f"Тел: {company_phone}")
+    cnv.drawString(left + 8, y - 44, f"Email: {company_email}")
 
     # Клиент
     cnv.setFillColor(TEXT)
     cnv.setFont(font_bold, 10)
     cnv.drawString(mid + gap / 2 + 8, y - 10, "Клиент")
     cnv.setFont(font_name, 9)
-    cnv.drawString(mid + gap / 2 + 8, y - 22, safe(client.get("name")))
+    cnv.drawString(mid + gap / 2 + 8, y - 22, client_name)
     cnv.setFillColor(MUTED)
-    cnv.drawString(mid + gap / 2 + 8, y - 34, f"Контакт: {safe(client.get('contact'))}")
-    cnv.drawString(mid + gap / 2 + 8, y - 44, f"Тел: {safe(client.get('phone'))}")
+    cnv.drawString(mid + gap / 2 + 8, y - 34, f"Контакт: {client_contact}")
+    cnv.drawString(mid + gap / 2 + 8, y - 44, f"Тел: {client_phone}")
 
     y -= (box_h + 10 * mm)
 
-    # ---------------- КОЛОНКИ ТАБЛИЦЫ (фикс: чтобы всё помещалось) ----------------
-    # ВАЖНО:
-    # - col_sum привязан к правому краю (с отступом)
-    # - все правые колонки сдвинуты левее и разнесены
+    # ---------------- КОЛОНКИ ТАБЛИЦЫ (фикс, чтобы не налезало) ----------------
+    # right-6mm = якорь суммы, дальше разнос колонок влево.
     col_no = left
     col_name = left + 10 * mm
-    col_unit = left + 105 * mm
-    col_price = left + 135 * mm
-    col_qty = left + 155 * mm
-    col_sum = right - 5 * mm  # ключевой фикс
+    col_unit = left + 110 * mm
+    col_price = left + 145 * mm
+    col_qty = left + 168 * mm
+    col_sum = right - 6 * mm
 
-    # шапка таблицы
     table_header()
 
     # ---------------- Строки таблицы ----------------
@@ -380,7 +387,6 @@ font_bold = "CustomFontBold"
         if y < 55 * mm:
             new_page()
 
-        # фон зебра
         if i % 2 == 0:
             cnv.setFillColor(ZEBRA)
             cnv.rect(left, y - row_h + 1, right - left, row_h, stroke=0, fill=1)
@@ -396,11 +402,15 @@ font_bold = "CustomFontBold"
         cnv.setFont(font_name, 9)
         cnv.drawString(col_no + 3, y - 6 * mm, str(i))
 
-        # название короче, чтобы точно не лезло в правые колонки
-        max_name = 55
-        if len(name) > max_name:
-            name = name[: max_name - 3] + "..."
-        cnv.drawString(col_name + 3, y - 6 * mm, name)
+        # ограничиваем ширину названия по реальной ширине, а не по символам
+        max_name_width = (col_unit - 6) - (col_name + 3)
+        show_name = name
+        while cnv.stringWidth(show_name, font_name, 9) > max_name_width and len(show_name) > 4:
+            show_name = show_name[:-1]
+        if show_name != name:
+            show_name = show_name[:-3] + "..."
+
+        cnv.drawString(col_name + 3, y - 6 * mm, show_name)
 
         cnv.setFillColor(MUTED)
         cnv.drawString(col_unit + 3, y - 6 * mm, unit)
@@ -469,9 +479,8 @@ font_bold = "CustomFontBold"
     cnv.drawString(
         left,
         9 * mm,
-        f"{safe(company.get('name'))} • {safe(company.get('phone'))} • {safe(company.get('email'))}",
+        f"{company_name} • {company_phone} • {company_email}",
     )
 
     cnv.save()
-
     return FileResponse(path=str(out_path), filename=out_path.name, media_type="application/pdf")
