@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>KP Builder</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div>
+        <h1>KP Builder</h1>
+        <div class="muted">Поиск → добавление позиций → PDF КП</div>
+      </div>
+      <div class="badge">MVP v2</div>
+    </header>
+
+    <section class="grid">
+      <div class="card">
+        <h2>Поиск товара</h2>
+        <div class="row">
+          <input id="search" class="input" placeholder="Например: тент, мягкие окна, полог..." autocomplete="off">
+          <button id="btnClear" class="btn ghost">Очистить</button>
+        </div>
+        <div id="suggest" class="suggest"></div>
+        <div class="hint">Подсказки показывают: название, группу, цену, ед. изм.</div>
+      </div>
+
+      <div class="card">
+        <h2>Реквизиты</h2>
+        <div class="form">
+          <div class="col">
+            <div class="label">Ваша компания</div>
+           <input id="c_name" class="input" value="TENT GLOBAL SOLUTION" />
+           <input id="c_phone" class="input" value="+77785665001" />
+           <input id="c_email" class="input" value="tentatyrau@gmail.com" />
+
+          </div>
+          <div class="col">
+            <div class="label">Клиент</div>
+            <input id="cl_name" class="input" placeholder="Клиент" />
+            <input id="cl_contact" class="input" placeholder="Контактное лицо" />
+            <input id="cl_phone" class="input" placeholder="Телефон" />
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:10px">
+          <div style="flex:1">
+            <div class="label">НДС %</div>
+            <input id="vat_rate" class="input" value="0" />
+          </div>
+          <div style="flex:1">
+            <div class="label">Срок действия, дней</div>
+            <input id="validity" class="input" value="3" />
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          <div class="label">Условия (доставка / оплата)</div>
+          <textarea id="terms" class="textarea" placeholder="Например: доставка 2-3 дня, предоплата 50% ..."></textarea>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Позиции КП</h2>
+      <div class="tableWrap">
+        <table class="table" id="itemsTable">
+          <thead>
+            <tr>
+              <th style="width:50%">Товар</th>
+              <th>Ед.</th>
+              <th>Цена</th>
+              <th>Кол-во</th>
+              <th>Скидка %</th>
+              <th>Сумма</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="itemsBody"></tbody>
+        </table>
+      </div>
+
+      <div class="totals">
+        <div class="muted">Итоги считаются автоматически</div>
+        <div class="sumBox">
+          <div>Сумма: <b id="subtotal">0</b></div>
+          <div>НДС: <b id="vat">0</b></div>
+          <div>Итого: <b id="total">0</b></div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="btnPDF" class="btn">Скачать PDF КП</button>
+        <div class="muted small" id="status"></div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

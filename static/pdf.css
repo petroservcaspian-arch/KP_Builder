@@ -1,0 +1,20 @@
+@page { size: A4; margin: 14mm 14mm 14mm 14mm; }
+
+body { font-family: Arial, sans-serif; font-size: 12px; color: #111; }
+h1 { font-size: 18px; margin: 0 0 6px 0; }
+.muted { color:#666; }
+
+.top { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+.box { border:1px solid #ddd; padding:10px; border-radius:8px; }
+
+.grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px; }
+
+table { width:100%; border-collapse:collapse; margin-top:14px; }
+th,td { border:1px solid #ddd; padding:8px; vertical-align:top; }
+th { background:#f5f5f5; text-align:left; }
+.right { text-align:right; }
+
+.totals { margin-top:10px; display:flex; justify-content:flex-end; }
+.totals table { width:320px; margin:0; }
+
+.footer { margin-top:16px; }

@@ -1,0 +1,321 @@
+:root{
+  --bg:#0b0f14;
+  --card:#111826;
+  --card2:#0f1624;
+  --text:#eaf0ff;
+  --muted:#9aa6c5;
+  --line:#22304a;
+  --accent:#5b8cff;
+  --accent2:#7aa2ff;
+  --danger:#ff5b6e;
+  --success:#4fd1a5;
+}
+
+*{
+  box-sizing:border-box;
+}
+
+body{
+  margin:0;
+  background:linear-gradient(180deg,#070a0f,#0b0f14);
+  color:var(--text);
+  font-family:Segoe UI, Arial, sans-serif;
+  font-size:14px;
+}
+
+.wrap{
+  max-width:1300px;
+  margin:0 auto;
+  padding:24px;
+}
+
+.top{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  margin-bottom:20px;
+}
+
+h1{
+  margin:0;
+  font-size:28px;
+  letter-spacing:.5px;
+}
+
+h2{
+  margin:0 0 14px 0;
+  font-size:18px;
+  font-weight:600;
+}
+
+.badge{
+  padding:8px 14px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  color:var(--muted);
+  background:rgba(255,255,255,0.03);
+}
+
+.muted{
+  color:var(--muted);
+}
+
+.small{
+  font-size:12px;
+}
+
+.card{
+  background:rgba(17,24,38,.95);
+  border:1px solid var(--line);
+  border-radius:16px;
+  padding:18px;
+  box-shadow:0 10px 30px rgba(0,0,0,.35);
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:18px;
+  margin-bottom:18px;
+}
+
+.row{
+  display:flex;
+  gap:12px;
+  align-items:center;
+}
+
+.col{
+  flex:1;
+}
+
+.label{
+  font-size:12px;
+  color:var(--muted);
+  margin-bottom:6px;
+}
+
+.input{
+  width:100%;
+  padding:10px 12px;
+  border-radius:10px;
+  border:1px solid var(--line);
+  background:#0c1220;
+  color:var(--text);
+  outline:none;
+  transition:.2s;
+}
+
+.input:focus{
+  border-color:var(--accent);
+  box-shadow:0 0 0 2px rgba(91,140,255,.15);
+}
+
+.textarea{
+  width:100%;
+  min-height:90px;
+  padding:10px 12px;
+  border-radius:10px;
+  border:1px solid var(--line);
+  background:#0c1220;
+  color:var(--text);
+  resize:vertical;
+  outline:none;
+}
+
+.textarea:focus{
+  border-color:var(--accent);
+  box-shadow:0 0 0 2px rgba(91,140,255,.15);
+}
+
+.btn{
+  padding:10px 16px;
+  border-radius:10px;
+  border:1px solid var(--accent);
+  background:var(--accent);
+  color:#08101f;
+  font-weight:600;
+  cursor:pointer;
+  transition:.2s;
+}
+
+.btn:hover{
+  background:var(--accent2);
+}
+
+.btn.ghost{
+  border-color:var(--line);
+  background:transparent;
+  color:var(--text);
+}
+
+.hint{
+  margin-top:10px;
+  color:var(--muted);
+  font-size:12px;
+}
+
+/* ---------- Подсказки ---------- */
+
+.suggest{
+  margin-top:12px;
+  border:1px solid var(--line);
+  border-radius:14px;
+  overflow:hidden;
+  max-height:340px;
+  overflow-y:auto;
+  background:var(--card2);
+}
+
+.sugItem{
+  padding:12px 14px;
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  cursor:pointer;
+  border-bottom:1px solid var(--line);
+  transition:.15s;
+}
+
+.sugItem:last-child{
+  border-bottom:none;
+}
+
+.sugItem:hover{
+  background:#16233c;
+}
+
+.sugItem.active{
+  background:#1a2b4f;
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+}
+
+.sugLeft{
+  min-width:0;
+}
+
+.sugName{
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  font-size:14px;
+}
+
+.sugMeta{
+  font-size:12px;
+  color:var(--muted);
+  margin-top:4px;
+}
+
+.sugRight{
+  text-align:right;
+  white-space:nowrap;
+  font-size:13px;
+}
+
+/* ---------- Таблица КП ---------- */
+
+.tableWrap{
+  overflow:auto;
+  border:1px solid var(--line);
+  border-radius:14px;
+  background:#0c1220;
+}
+
+.table{
+  width:100%;
+  border-collapse:collapse;
+  min-width:950px;
+}
+
+.table th,
+.table td{
+  padding:10px 12px;
+  border-bottom:1px solid var(--line);
+  vertical-align:top;
+}
+
+.table th{
+  color:var(--muted);
+  font-weight:600;
+  background:#101a2b;
+  position:sticky;
+  top:0;
+}
+
+.table tr:hover{
+  background:#131f36;
+}
+
+.kpInput{
+  width:90px;
+  padding:6px 8px;
+  border-radius:8px;
+  border:1px solid var(--line);
+  background:#0b1220;
+  color:var(--text);
+  outline:none;
+}
+
+.kpInput:focus{
+  border-color:var(--accent);
+}
+
+.del{
+  color:var(--danger);
+  cursor:pointer;
+  font-weight:700;
+  font-size:16px;
+  text-align:center;
+}
+
+.del:hover{
+  color:#ff8090;
+}
+
+/* ---------- Итоги ---------- */
+
+.totals{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-top:16px;
+}
+
+.sumBox{
+  display:flex;
+  gap:30px;
+  font-size:15px;
+}
+
+.sumBox b{
+  font-size:16px;
+}
+
+.actions{
+  display:flex;
+  gap:16px;
+  align-items:center;
+  margin-top:14px;
+}
+
+#status{
+  font-size:13px;
+  color:var(--muted);
+}
+
+/* ---------- Адаптация ---------- */
+
+@media(max-width:1100px){
+  .grid{
+    grid-template-columns:1fr;
+  }
+}
+
+@media(max-width:700px){
+  .sumBox{
+    flex-direction:column;
+    gap:6px;
+  }
+}
