@@ -25,16 +25,13 @@ STATIC_DIR = ROOT / "static"
 WEB_DIR = ROOT / "web"
 OUTPUT_DIR = ROOT / "output"
 FONTS_DIR = ROOT / "fonts"
-
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 DATA_PATH = DATA_DIR / "catalog.xlsx"
 
-
 # ---------------- App ----------------
 app = FastAPI(title="KP Builder (ReportLab)")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
 
 # ---------------- Загрузка каталога ----------------
 if not DATA_PATH.exists():
@@ -157,7 +154,7 @@ def calc_totals(items: List[Dict[str, Any]], vat_rate: float = 0.0) -> Dict[str,
     return {"subtotal": round(subtotal, 2), "vat": round(vat, 2), "total": round(total, 2)}
 
 
-# ---------------- PDF (ReportLab) ----------------
+# ---------------- Шрифты ----------------
 def _pick_font_file(candidates: List[str]) -> Path:
     for name in candidates:
         p = FONTS_DIR / name
@@ -165,21 +162,19 @@ def _pick_font_file(candidates: List[str]) -> Path:
             return p
     raise FileNotFoundError(
         "Не найдены файлы шрифтов в папке fonts/. "
-        "Проверь, что там есть DejaVuSans.ttf и DejaVuSans-Bold.ttf "
-        "или варианты с [1], как в твоём репо."
+        "Нужны DejaVuSans.ttf и DejaVuSans-Bold.ttf (или варианты с [1])."
     )
 
 
 def _register_fonts() -> Tuple[str, str]:
-    # У тебя на GitHub файлы с [1], поэтому ищем оба варианта.
     regular = _pick_font_file(["DejaVuSans.ttf", "DejaVuSans[1].ttf"])
     bold = _pick_font_file(["DejaVuSans-Bold.ttf", "DejaVuSans-Bold[1].ttf"])
-
     pdfmetrics.registerFont(TTFont("TGS-Regular", str(regular)))
     pdfmetrics.registerFont(TTFont("TGS-Bold", str(bold)))
     return "TGS-Regular", "TGS-Bold"
 
 
+# ---------------- PDF (ReportLab) ----------------
 @app.post("/api/quote/pdf")
 def make_pdf(payload: Dict[str, Any] = Body(...)):
     company = payload.get("company") or {}
@@ -193,12 +188,11 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     if not items:
         return JSONResponse(status_code=400, content={"error": "Пустой список товаров"})
 
-    # ---- Дефолты компании (как ты просил закрепить) ----
+    # фиксированные контакты
     company_name = str(company.get("name") or "TENT GLOBAL SOLUTION").strip()
     company_phone = str(company.get("phone") or "+77785665001").strip()
     company_email = str(company.get("email") or "tentatyrau@gmail.com").strip()
 
-    # Клиент: не "компания клиента", просто "Клиент"
     client_name = str(client.get("name") or "Клиент").strip()
     client_contact = str(client.get("contact") or "").strip()
     client_phone = str(client.get("phone") or "").strip()
@@ -208,11 +202,7 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     quote_no = str(payload.get("quote_no") or f"KP-{now:%Y%m%d-%H%M%S}").strip()
     out_path = OUTPUT_DIR / f"{quote_no}.pdf"
 
-    # ---- Регистрируем кириллические шрифты (из fonts/) ----
     font_name, font_bold = _register_fonts()
-
-    def safe(s: Any) -> str:
-        return str(s or "").strip()
 
     def money(v: Any) -> str:
         v = to_num(v, 0.0)
@@ -223,27 +213,7 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
             return str(int(round(q)))
         return f"{q:.3f}".rstrip("0").rstrip(".")
 
-    def draw_wrapped_text(c: canvas.Canvas, x: float, y_: float, text: str,
-                          max_width: float, line_height: float, font: str, size: int) -> float:
-        c.setFont(font, size)
-        words = (text or "").split()
-        if not words:
-            return y_
-        line = ""
-        for w in words:
-            test = (line + " " + w).strip()
-            if c.stringWidth(test, font, size) <= max_width:
-                line = test
-            else:
-                c.drawString(x, y_, line)
-                y_ -= line_height
-                line = w
-        if line:
-            c.drawString(x, y_, line)
-            y_ -= line_height
-        return y_
-
-    # --- Цвета под стиль (синий + золото) ---
+    # --- Цвета ---
     BRAND = colors.HexColor("#0E5D8A")
     BRAND_DARK = colors.HexColor("#0A3E5F")
     GOLD = colors.HexColor("#D4AF37")
@@ -256,11 +226,43 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     W, H = A4
     left = 16 * mm
     right = W - 16 * mm
+    table_w = right - left
 
-    # ---------------- Шапка ----------------
+    # ---- КОЛОНКИ: ширины строго суммой = table_w (178mm)
+    # No 9mm, Name 92mm, Unit 12mm, Price 22mm, Qty 15mm, Sum 28mm  => 178mm
+    w_no = 9 * mm
+    w_name = 92 * mm
+    w_unit = 12 * mm
+    w_price = 22 * mm
+    w_qty = 15 * mm
+    w_sum = table_w - (w_no + w_name + w_unit + w_price + w_qty)  # остаток
+
+    x_no_l = left
+    x_no_r = x_no_l + w_no
+
+    x_name_l = x_no_r
+    x_name_r = x_name_l + w_name
+
+    x_unit_l = x_name_r
+    x_unit_r = x_unit_l + w_unit
+
+    x_price_l = x_unit_r
+    x_price_r = x_price_l + w_price
+
+    x_qty_l = x_price_r
+    x_qty_r = x_qty_l + w_qty
+
+    x_sum_l = x_qty_r
+    x_sum_r = right  # конец таблицы
+
+    def draw_center(xl: float, xr: float, y: float, text: str, font: str, size: float, color=colors.white):
+        cnv.setFillColor(color)
+        cnv.setFont(font, size)
+        cx = (xl + xr) / 2
+        cnv.drawCentredString(cx, y, text)
+
     def header() -> float:
         header_h = 38 * mm
-
         cnv.setFillColor(BRAND)
         cnv.rect(0, H - header_h, W, header_h, stroke=0, fill=1)
 
@@ -270,14 +272,7 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
 
         logo_path = (STATIC_DIR / "logo.png").resolve()
         if logo_path.exists():
-            cnv.drawImage(
-                str(logo_path),
-                left,
-                H - header_h + 6 * mm,
-                width=42 * mm,
-                height=26 * mm,
-                mask="auto",
-            )
+            cnv.drawImage(str(logo_path), left, H - header_h + 6 * mm, width=42 * mm, height=26 * mm, mask="auto")
 
         cnv.setFillColor(GOLD)
         cnv.setFont(font_bold, 16)
@@ -291,50 +286,17 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
         cnv.setFillColor(colors.white)
         cnv.setFont(font_bold, 11)
         cnv.drawRightString(right, H - 16 * mm, f"КП № {quote_no}")
-
         cnv.setFont(font_name, 9)
         cnv.drawRightString(right, H - 22 * mm, f"Дата: {now:%d.%m.%Y}")
 
         cnv.setFont(font_name, 9)
-        cnv.drawRightString(
-            right,
-            H - header_h + 6 * mm,
-            f"{company_phone}   |   {company_email}",
-        )
+        cnv.drawRightString(right, H - header_h + 6 * mm, f"{company_phone}   |   {company_email}")
 
         return H - header_h - 10 * mm
 
-    # ---------------- Таблица: шапка/страницы ----------------
-    def table_header() -> None:
-        nonlocal y
-        cnv.setFillColor(BRAND_DARK)
-        cnv.roundRect(left, y - 10 * mm, right - left, 10 * mm, 5, stroke=0, fill=1)
-
-        cnv.setStrokeColor(GOLD)
-        cnv.setLineWidth(1)
-        cnv.line(left, y - 10 * mm, right, y - 10 * mm)
-
-        cnv.setFillColor(colors.white)
-        cnv.setFont(font_bold, 9)
-        cnv.drawString(col_no + 3, y - 7 * mm, "№")
-        cnv.drawString(col_name + 3, y - 7 * mm, "Наименование")
-        cnv.drawString(col_unit + 3, y - 7 * mm, "Ед.")
-        cnv.drawRightString(col_price, y - 7 * mm, "Цена")
-        cnv.drawRightString(col_qty, y - 7 * mm, "Кол-во")
-        cnv.drawRightString(col_sum, y - 7 * mm, "Сумма")
-
-        y -= 12 * mm
-
-    def new_page() -> None:
-        nonlocal y
-        cnv.showPage()
-        y = header()
-        table_header()
-
-    # старт
     y = header()
 
-    # ---------------- Блоки Поставщик/Клиент ----------------
+    # ---- Поставщик/Клиент ----
     box_h = 26 * mm
     gap = 6 * mm
     mid = (left + right) / 2
@@ -347,7 +309,6 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     box(left, y - box_h, mid - gap / 2, y)
     box(mid + gap / 2, y - box_h, right, y)
 
-    # Поставщик
     cnv.setFillColor(TEXT)
     cnv.setFont(font_bold, 10)
     cnv.drawString(left + 8, y - 10, "Поставщик")
@@ -357,7 +318,6 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     cnv.drawString(left + 8, y - 34, f"Тел: {company_phone}")
     cnv.drawString(left + 8, y - 44, f"Email: {company_email}")
 
-    # Клиент
     cnv.setFillColor(TEXT)
     cnv.setFont(font_bold, 10)
     cnv.drawString(mid + gap / 2 + 8, y - 10, "Клиент")
@@ -369,18 +329,38 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
 
     y -= (box_h + 10 * mm)
 
-    # ---------------- КОЛОНКИ ТАБЛИЦЫ (фикс, чтобы не налезало) ----------------
-    # right-6mm = якорь суммы, дальше разнос колонок влево.
-    col_no = left
-    col_name = left + 10 * mm
-    col_unit = left + 110 * mm
-    col_price = left + 145 * mm
-    col_qty = left + 168 * mm
-    col_sum = right - 6 * mm
+    # ---- Шапка таблицы (НИЧЕГО НЕ НАЛЕЗЕТ) ----
+    def table_header():
+        nonlocal y
+        h = 10 * mm
+        cnv.setFillColor(BRAND_DARK)
+        cnv.roundRect(left, y - h, table_w, h, 5, stroke=0, fill=1)
+
+        cnv.setStrokeColor(GOLD)
+        cnv.setLineWidth(1)
+        cnv.line(left, y - h, right, y - h)
+
+        # Заголовки по центру каждой колонки
+        draw_center(x_no_l, x_no_r, y - 7 * mm, "№", font_bold, 9)
+        cnv.setFillColor(colors.white)
+        cnv.setFont(font_bold, 9)
+        cnv.drawString(x_name_l + 3, y - 7 * mm, "Наименование")
+        draw_center(x_unit_l, x_unit_r, y - 7 * mm, "Ед.", font_bold, 9)
+        draw_center(x_price_l, x_price_r, y - 7 * mm, "Цена", font_bold, 9)
+        draw_center(x_qty_l, x_qty_r, y - 7 * mm, "Кол-во", font_bold, 9)
+        draw_center(x_sum_l, x_sum_r, y - 7 * mm, "Сумма", font_bold, 9)
+
+        y -= (h + 2 * mm)
+
+    def new_page():
+        nonlocal y
+        cnv.showPage()
+        y = header()
+        table_header()
 
     table_header()
 
-    # ---------------- Строки таблицы ----------------
+    # ---- Строки ----
     row_h = 9 * mm
 
     for i, it in enumerate(items, start=1):
@@ -389,10 +369,10 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
 
         if i % 2 == 0:
             cnv.setFillColor(ZEBRA)
-            cnv.rect(left, y - row_h + 1, right - left, row_h, stroke=0, fill=1)
+            cnv.rect(left, y - row_h + 1, table_w, row_h, stroke=0, fill=1)
 
-        name = safe(it.get("name"))
-        unit = safe(it.get("unit"))
+        name = str(it.get("name") or "").strip()
+        unit = str(it.get("unit") or "").strip()
         price = to_num(it.get("price"), 0.0)
         qty = to_num(it.get("qty"), 0.0)
         disc = to_num(it.get("discount"), 0.0)
@@ -400,25 +380,25 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
 
         cnv.setFillColor(TEXT)
         cnv.setFont(font_name, 9)
-        cnv.drawString(col_no + 3, y - 6 * mm, str(i))
 
-        # ограничиваем ширину названия по реальной ширине, а не по символам
-        max_name_width = (col_unit - 6) - (col_name + 3)
+        cnv.drawString(x_no_l + 3, y - 6 * mm, str(i))
+
+        # обрезаем по ширине, чтобы не лезло в "Ед."
+        max_name_width = (x_name_r - 6) - (x_name_l + 3)
         show_name = name
         while cnv.stringWidth(show_name, font_name, 9) > max_name_width and len(show_name) > 4:
             show_name = show_name[:-1]
         if show_name != name:
             show_name = show_name[:-3] + "..."
-
-        cnv.drawString(col_name + 3, y - 6 * mm, show_name)
+        cnv.drawString(x_name_l + 3, y - 6 * mm, show_name)
 
         cnv.setFillColor(MUTED)
-        cnv.drawString(col_unit + 3, y - 6 * mm, unit)
+        cnv.drawCentredString((x_unit_l + x_unit_r) / 2, y - 6 * mm, unit)
 
         cnv.setFillColor(TEXT)
-        cnv.drawRightString(col_price, y - 6 * mm, money(price))
-        cnv.drawRightString(col_qty, y - 6 * mm, fmt_qty(qty))
-        cnv.drawRightString(col_sum, y - 6 * mm, money(line_sum))
+        cnv.drawRightString(x_price_r - 3, y - 6 * mm, money(price))
+        cnv.drawRightString(x_qty_r - 3, y - 6 * mm, fmt_qty(qty))
+        cnv.drawRightString(x_sum_r - 3, y - 6 * mm, money(line_sum))
 
         y -= row_h
 
@@ -428,7 +408,7 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     cnv.line(left, y, right, y)
     y -= 10 * mm
 
-    # ---------------- Итоги ----------------
+    # ---- Итоги ----
     box_w = 90 * mm
     box_h2 = 34 * mm
     box_x = right - box_w
@@ -455,32 +435,18 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
 
     y = box_y - 10 * mm
 
-    # ---------------- Срок / условия ----------------
     cnv.setFillColor(TEXT)
     cnv.setFont(font_bold, 9)
     cnv.drawString(left, y, f"Срок действия КП: {validity_days} дней")
-    y -= 6 * mm
 
-    if terms.strip():
-        cnv.setFillColor(MUTED)
-        cnv.setFont(font_bold, 9)
-        cnv.drawString(left, y, "Условия:")
-        y -= 5 * mm
-        cnv.setFillColor(TEXT)
-        y = draw_wrapped_text(cnv, left, y, terms, right - left, 4.5 * mm, font_name, 9)
-
-    # ---------------- Footer ----------------
+    # footer
     cnv.setStrokeColor(GOLD)
     cnv.setLineWidth(1)
     cnv.line(left, 14 * mm, right, 14 * mm)
 
     cnv.setFillColor(BRAND_DARK)
     cnv.setFont(font_name, 8.5)
-    cnv.drawString(
-        left,
-        9 * mm,
-        f"{company_name} • {company_phone} • {company_email}",
-    )
+    cnv.drawString(left, 9 * mm, f"{company_name} • {company_phone} • {company_email}")
 
     cnv.save()
     return FileResponse(path=str(out_path), filename=out_path.name, media_type="application/pdf")
