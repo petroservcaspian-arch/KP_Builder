@@ -174,20 +174,20 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     quote_no = payload.get("quote_no") or f"KP-{now:%Y%m%d-%H%M%S}"
     out_path = OUTPUT_DIR / f"{quote_no}.pdf"
 
-    # --- Шрифты (кириллица) ---
-    font_name = "Helvetica"
-    font_bold = "Helvetica-Bold"
-    try:
-        arial = r"C:\Windows\Fonts\arial.ttf"
-        arial_b = r"C:\Windows\Fonts\arialbd.ttf"
-        if Path(arial).exists():
-            pdfmetrics.registerFont(TTFont("ARIAL", arial))
-            font_name = "ARIAL"
-        if Path(arial_b).exists():
-            pdfmetrics.registerFont(TTFont("ARIALB", arial_b))
-            font_bold = "ARIALB"
-        else:
-            font_bold = font_name
+   # --- Шрифты (гарантированная кириллица) ---
+font_name = "DejaVu"
+font_bold = "DejaVu-Bold"
+
+FONT_DIR = ROOT / "fonts"
+
+pdfmetrics.registerFont(
+    TTFont("DejaVu", str(FONT_DIR / "DejaVuSans.ttf"))
+)
+
+pdfmetrics.registerFont(
+    TTFont("DejaVu-Bold", str(FONT_DIR / "DejaVuSans-Bold.ttf"))
+)
+
     except Exception:
         pass
 
@@ -236,6 +236,16 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     W, H = A4
     left = 16 * mm
     right = W - 16 * mm
+
+# ---- ШРИФТЫ ДЛЯ СЕРВЕРА ----
+font_path = ROOT / "fonts" / "DejaVuSans.ttf"
+font_bold_path = ROOT / "fonts" / "DejaVuSans-Bold.ttf"
+
+pdfmetrics.registerFont(TTFont("CustomFont", str(font_path)))
+pdfmetrics.registerFont(TTFont("CustomFontBold", str(font_bold_path)))
+
+font_name = "CustomFont"
+font_bold = "CustomFontBold"
 
     # ---------------- Шапка ----------------
     def header() -> float:
