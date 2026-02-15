@@ -3,17 +3,23 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from fastapi import Body, FastAPI, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from rapidfuzz import fuzz
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
-from reportlab.pdfgen import canvas
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Table, TableStyle,
+    Paragraph, Spacer, Image as RLImage,
+)
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
@@ -25,19 +31,115 @@ STATIC_DIR = ROOT / "static"
 WEB_DIR = ROOT / "web"
 OUTPUT_DIR = ROOT / "output"
 FONTS_DIR = ROOT / "fonts"
+
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 DATA_PATH = DATA_DIR / "catalog.xlsx"
 
+# ---------------- Константы компании (фиксируем навсегда) ----------------
+FIX_COMPANY = {
+    "name": "TENT GLOBAL SOLUTION",
+    "phone": "+77785665001",
+    "email": "tentatyrau@gmail.com",
+}
+
 # ---------------- App ----------------
 app = FastAPI(title="KP Builder (ReportLab)")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+# ---------------- Утилиты ----------------
+def to_num(x: Any, default: float = 0.0) -> float:
+    try:
+        if x is None:
+            return float(default)
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip().replace("\u00a0", "").replace(" ", "")
+        s = s.replace(",", ".")
+        if s == "":
+            return float(default)
+        return float(s)
+    except Exception:
+        return float(default)
+
+
+def safe(s: Any) -> str:
+    return str(s or "").strip()
+
+
+def money(v: Any) -> str:
+    v = to_num(v, 0.0)
+    return f"{v:,.2f}".replace(",", " ")
+
+
+def fmt_qty(q: Any) -> str:
+    qf = to_num(q, 0.0)
+    if abs(qf - round(qf)) < 1e-9:
+        return str(int(round(qf)))
+    return f"{qf:.3f}".rstrip("0").rstrip(".")
+
+
+def calc_totals(items: List[Dict[str, Any]], vat_rate: float = 0.0) -> Dict[str, float]:
+    subtotal = 0.0
+    for it in items:
+        qty = to_num(it.get("qty"), 0.0)
+        price = to_num(it.get("price"), 0.0)
+        disc = to_num(it.get("discount"), 0.0)
+        subtotal += qty * price * (1 - disc / 100.0)
+    vat = subtotal * (vat_rate / 100.0)
+    total = subtotal + vat
+    return {"subtotal": round(subtotal, 2), "vat": round(vat, 2), "total": round(total, 2)}
+
+
+# ---------------- Шрифты (чтобы кириллица не превращалась в квадраты) ----------------
+def register_fonts() -> Dict[str, str]:
+    """
+    Ищем DejaVuSans/DejaVuSans-Bold в папке fonts.
+    Ты уже залил ttf в GitHub (на скрине они есть), но названия могут быть:
+    - DejaVuSans.ttf / DejaVuSans-Bold.ttf
+    - DejaVuSans[1].ttf / DejaVuSans-Bold[1].ttf
+    """
+    regular = None
+    bold = None
+
+    if FONTS_DIR.exists():
+        for p in FONTS_DIR.glob("*.ttf"):
+            name = p.name.lower()
+            if "dejavu" in name and "bold" not in name and regular is None:
+                regular = p
+            if "dejavu" in name and "bold" in name and bold is None:
+                bold = p
+
+    # fallback (на всякий)
+    if regular is None or bold is None:
+        return {"regular": "Helvetica", "bold": "Helvetica-Bold"}
+
+    pdfmetrics.registerFont(TTFont("KPFont", str(regular)))
+    pdfmetrics.registerFont(TTFont("KPFontBold", str(bold)))
+    return {"regular": "KPFont", "bold": "KPFontBold"}
+
+
+FONTS = register_fonts()
+
 
 # ---------------- Загрузка каталога ----------------
 if not DATA_PATH.exists():
     raise FileNotFoundError(f"Не найден файл каталога: {DATA_PATH}")
 
 df = pd.read_excel(DATA_PATH)
+
+# Ищем колонку описания автоматически (под разные файлы)
+DESC_CANDIDATES = [
+    "desc", "description", "описание", "характеристика", "краткое описание", "short_desc",
+    "summary", "примечание", "note"
+]
+desc_col: Optional[str] = None
+for c in df.columns:
+    cl = str(c).strip().lower()
+    if cl in DESC_CANDIDATES:
+        desc_col = c
+        break
 
 NEEDED = ["id", "name", "price", "currency", "unit", "group_name", "Наличие"]
 for col in NEEDED:
@@ -46,11 +148,7 @@ for col in NEEDED:
 
 df["name"] = df["name"].astype(str).fillna("").str.strip()
 df["name_norm"] = (
-    df["name"]
-    .astype(str)
-    .str.lower()
-    .str.replace(r"\s+", " ", regex=True)
-    .str.strip()
+    df["name"].astype(str).str.lower().str.replace(r"\s+", " ", regex=True).str.strip()
 )
 NAMES = df["name_norm"].tolist()
 
@@ -101,7 +199,7 @@ def search(q: str = Query("", min_length=1), limit: int = 15):
         return []
     tokens = _tokenize(qn)
 
-    scored: List[Tuple[float, int]] = []
+    scored: List[tuple[float, int]] = []
     for idx, name_norm in enumerate(NAMES):
         s = _score(name_norm, qn, tokens)
         if s > 0:
@@ -113,9 +211,14 @@ def search(q: str = Query("", min_length=1), limit: int = 15):
     results = []
     for s, idx in scored:
         row = df.iloc[idx]
+        desc_val = ""
+        if desc_col and desc_col in df.columns and pd.notna(row.get(desc_col)):
+            desc_val = str(row.get(desc_col)).strip()
+
         results.append({
             "id": int(row["id"]) if pd.notna(row["id"]) else (idx + 1),
             "name": row["name"],
+            "desc": desc_val,  # <- КРАТКОЕ ОПИСАНИЕ ДЛЯ UI (редактируемое)
             "unit": row["unit"] if pd.notna(row["unit"]) else "",
             "price": float(row["price"]) if pd.notna(row["price"]) else 0.0,
             "currency": row["currency"] if pd.notna(row["currency"]) else "KZT",
@@ -126,94 +229,41 @@ def search(q: str = Query("", min_length=1), limit: int = 15):
     return results
 
 
-# ---------------- Расчёты ----------------
-def to_num(x, default: float = 0.0) -> float:
-    try:
-        if x is None:
-            return float(default)
-        if isinstance(x, (int, float)):
-            return float(x)
-        s = str(x).strip().replace("\u00a0", "").replace(" ", "")
-        s = s.replace(",", ".")
-        if s == "":
-            return float(default)
-        return float(s)
-    except Exception:
-        return float(default)
-
-
-def calc_totals(items: List[Dict[str, Any]], vat_rate: float = 0.0) -> Dict[str, float]:
-    subtotal = 0.0
-    for it in items:
-        qty = to_num(it.get("qty"), 0.0)
-        price = to_num(it.get("price"), 0.0)
-        disc = to_num(it.get("discount"), 0.0)
-        subtotal += qty * price * (1 - disc / 100.0)
-    vat = subtotal * (vat_rate / 100.0)
-    total = subtotal + vat
-    return {"subtotal": round(subtotal, 2), "vat": round(vat, 2), "total": round(total, 2)}
-
-
-# ---------------- Шрифты ----------------
-def _pick_font_file(candidates: List[str]) -> Path:
-    for name in candidates:
-        p = FONTS_DIR / name
-        if p.exists():
-            return p
-    raise FileNotFoundError(
-        "Не найдены файлы шрифтов в папке fonts/. "
-        "Нужны DejaVuSans.ttf и DejaVuSans-Bold.ttf (или варианты с [1])."
-    )
-
-
-def _register_fonts() -> Tuple[str, str]:
-    regular = _pick_font_file(["DejaVuSans.ttf", "DejaVuSans[1].ttf"])
-    bold = _pick_font_file(["DejaVuSans-Bold.ttf", "DejaVuSans-Bold[1].ttf"])
-    pdfmetrics.registerFont(TTFont("TGS-Regular", str(regular)))
-    pdfmetrics.registerFont(TTFont("TGS-Bold", str(bold)))
-    return "TGS-Regular", "TGS-Bold"
-
-
-# ---------------- PDF (ReportLab) ----------------
+# ---------------- PDF (ReportLab + Table) ----------------
 @app.post("/api/quote/pdf")
 def make_pdf(payload: Dict[str, Any] = Body(...)):
-    company = payload.get("company") or {}
+    company_in = payload.get("company") or {}
     client = payload.get("client") or {}
     items = payload.get("items") or []
-
     vat_rate = to_num(payload.get("vat_rate"), 0.0)
     validity_days = int(to_num(payload.get("validity_days"), 3))
-    terms = str(payload.get("payment_terms") or "")
+
+    # (по желанию) поля “как в КП Оп”
+    komu = safe(payload.get("komu") or safe(client.get("name")) or "Клиент")
+    organizaciya = safe(payload.get("organizaciya") or "")
+    client_phone = safe(payload.get("client_phone") or safe(client.get("phone")))
+    theme = safe(payload.get("theme") or "")
+
+    supply_terms = safe(payload.get("supply_terms") or "")      # "Срок поставки: ..."
+    payment_terms = safe(payload.get("payment_terms") or "")    # "Условия оплаты: ..."
+    note_block = safe(payload.get("note") or "")                # доп. текст
 
     if not items:
         return JSONResponse(status_code=400, content={"error": "Пустой список товаров"})
 
-    # фиксированные контакты
-    company_name = str(company.get("name") or "TENT GLOBAL SOLUTION").strip()
-    company_phone = str(company.get("phone") or "+77785665001").strip()
-    company_email = str(company.get("email") or "tentatyrau@gmail.com").strip()
-
-    client_name = str(client.get("name") or "Клиент").strip()
-    client_contact = str(client.get("contact") or "").strip()
-    client_phone = str(client.get("phone") or "").strip()
+    # Фиксируем компанию (как ты просил) независимо от payload
+    company = {
+        "name": FIX_COMPANY["name"],
+        "phone": FIX_COMPANY["phone"],
+        "email": FIX_COMPANY["email"],
+    }
 
     totals = calc_totals(items, vat_rate=vat_rate)
     now = datetime.now()
-    quote_no = str(payload.get("quote_no") or f"KP-{now:%Y%m%d-%H%M%S}").strip()
+    quote_no = safe(payload.get("quote_no")) or f"KP-{now:%Y%m%d-%H%M%S}"
     out_path = OUTPUT_DIR / f"{quote_no}.pdf"
 
-    font_name, font_bold = _register_fonts()
-
-    def money(v: Any) -> str:
-        v = to_num(v, 0.0)
-        return f"{v:,.2f}".replace(",", " ")
-
-    def fmt_qty(q: float) -> str:
-        if abs(q - round(q)) < 1e-9:
-            return str(int(round(q)))
-        return f"{q:.3f}".rstrip("0").rstrip(".")
-
-    # --- Цвета ---
+    # --- Стиль/цвета (как твой бренд) ---
     BRAND = colors.HexColor("#0E5D8A")
     BRAND_DARK = colors.HexColor("#0A3E5F")
     GOLD = colors.HexColor("#D4AF37")
@@ -222,231 +272,243 @@ def make_pdf(payload: Dict[str, Any] = Body(...)):
     TEXT = colors.HexColor("#111827")
     ZEBRA = colors.HexColor("#F6F8FC")
 
-    cnv = canvas.Canvas(str(out_path), pagesize=A4)
-    W, H = A4
-    left = 16 * mm
-    right = W - 16 * mm
-    table_w = right - left
+    # --- Документ ---
+    doc = SimpleDocTemplate(
+        str(out_path),
+        pagesize=A4,
+        leftMargin=14 * mm,
+        rightMargin=14 * mm,
+        topMargin=14 * mm,
+        bottomMargin=12 * mm,
+        title=quote_no,
+    )
 
-    # ---- КОЛОНКИ: ширины строго суммой = table_w (178mm)
-    # No 9mm, Name 92mm, Unit 12mm, Price 22mm, Qty 15mm, Sum 28mm  => 178mm
-    w_no = 9 * mm
-    w_name = 92 * mm
-    w_unit = 12 * mm
-    w_price = 22 * mm
-    w_qty = 15 * mm
-    w_sum = table_w - (w_no + w_name + w_unit + w_price + w_qty)  # остаток
+    styles = getSampleStyleSheet()
 
-    x_no_l = left
-    x_no_r = x_no_l + w_no
+    base = ParagraphStyle(
+        "base",
+        parent=styles["Normal"],
+        fontName=FONTS["regular"],
+        fontSize=9,
+        leading=11,
+        textColor=TEXT,
+    )
+    small = ParagraphStyle(
+        "small",
+        parent=base,
+        fontSize=8,
+        leading=10,
+        textColor=MUTED,
+    )
+    h1 = ParagraphStyle(
+        "h1",
+        parent=base,
+        fontName=FONTS["bold"],
+        fontSize=14,
+        leading=16,
+        textColor=TEXT,
+    )
+    h2 = ParagraphStyle(
+        "h2",
+        parent=base,
+        fontName=FONTS["bold"],
+        fontSize=10,
+        leading=12,
+        textColor=TEXT,
+    )
 
-    x_name_l = x_no_r
-    x_name_r = x_name_l + w_name
+    story: List[Any] = []
 
-    x_unit_l = x_name_r
-    x_unit_r = x_unit_l + w_unit
+    # --- Шапка (логотип + бренд-полоса) ---
+    logo_path = (STATIC_DIR / "logo.png").resolve()
 
-    x_price_l = x_unit_r
-    x_price_r = x_price_l + w_price
+    header_tbl_data = []
 
-    x_qty_l = x_price_r
-    x_qty_r = x_qty_l + w_qty
+    # левая часть: лого
+    if logo_path.exists():
+        img = RLImage(str(logo_path))
+        img.drawHeight = 22 * mm
+        img.drawWidth = 36 * mm
+        left_cell = img
+    else:
+        left_cell = Paragraph(company["name"], h2)
 
-    x_sum_l = x_qty_r
-    x_sum_r = right  # конец таблицы
+    # правая часть: номер/дата/контакты
+    right_text = (
+        f"<font color='#FFFFFF'><b>КП № {quote_no}</b><br/>"
+        f"Дата: {now:%d.%m.%Y}<br/></font>"
+        f"<font color='#FFFFFF'>{company['phone']} &nbsp; | &nbsp; {company['email']}</font>"
+    )
+    right_cell = Paragraph(right_text, ParagraphStyle(
+        "hdr",
+        parent=base,
+        fontName=FONTS["regular"],
+        fontSize=9,
+        leading=11,
+        textColor=colors.white,
+    ))
 
-    def draw_center(xl: float, xr: float, y: float, text: str, font: str, size: float, color=colors.white):
-        cnv.setFillColor(color)
-        cnv.setFont(font, size)
-        cx = (xl + xr) / 2
-        cnv.drawCentredString(cx, y, text)
+    center_text = Paragraph(
+        "<font color='#D4AF37'><b>TENT GLOBAL SOLUTION</b></font><br/>"
+        "<font color='#FFFFFF'>ТЕНТЫ • БРЕЗЕНТ • АНГАРЫ</font>",
+        ParagraphStyle("center", parent=base, fontName=FONTS["regular"], fontSize=10, leading=12, textColor=colors.white)
+    )
 
-    def header() -> float:
-        header_h = 38 * mm
-        cnv.setFillColor(BRAND)
-        cnv.rect(0, H - header_h, W, header_h, stroke=0, fill=1)
+    header_tbl_data.append([left_cell, center_text, right_cell])
 
-        cnv.setStrokeColor(GOLD)
-        cnv.setLineWidth(1.2)
-        cnv.line(0, H - header_h, W, H - header_h)
+    header_tbl = Table(
+        header_tbl_data,
+        colWidths=[40*mm, 90*mm, 55*mm],
+        rowHeights=[30*mm],
+    )
+    header_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), BRAND),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (0, 0), "LEFT"),
+        ("ALIGN", (1, 0), (1, 0), "LEFT"),
+        ("ALIGN", (2, 0), (2, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LINEBELOW", (0, 0), (-1, -1), 1.2, GOLD),
+    ]))
+    story.append(header_tbl)
+    story.append(Spacer(1, 6*mm))
 
-        logo_path = (STATIC_DIR / "logo.png").resolve()
-        if logo_path.exists():
-            cnv.drawImage(str(logo_path), left, H - header_h + 6 * mm, width=42 * mm, height=26 * mm, mask="auto")
+    # --- Блок “как в КП Оп.pdf” (КОМУ/ОТ/ОРГАНИЗАЦИЯ/ТЕЛЕФОНЫ/ТЕМА...) ---
+    meta_left = [
+        ["КОМУ:", komu],
+        ["ОРГАНИЗАЦИЯ:", organizaciya],
+        ["НОМЕР ТЕЛЕФОНА:", client_phone],
+        ["На тему:", theme],
+    ]
+    meta_right = [
+        ["ОТ:", "TENT GLOBAL SOLUTION"],
+        ["ОБЩЕЕ ЧИСЛО СТРАНИЦ:", "1"],
+        ["ТЕЛЕФОН ОТПРАВИТЕЛЯ:", company["phone"]],
+        ["E-mail:", company["email"]],
+    ]
 
-        cnv.setFillColor(GOLD)
-        cnv.setFont(font_bold, 16)
-        cnv.drawString(left + 48 * mm, H - 16 * mm, "TENT GLOBAL")
-        cnv.drawString(left + 48 * mm, H - 24 * mm, "SOLUTION")
+    # делаем 2 колонки таблично
+    meta_tbl = Table(
+        [
+            [
+                Table(meta_left, colWidths=[40*mm, 70*mm]),
+                Table(meta_right, colWidths=[50*mm, 45*mm]),
+            ]
+        ],
+        colWidths=[110*mm, 95*mm],
+    )
+    meta_tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.8, LINE),
+        ("INNERGRID", (0, 0), (-1, -1), 0.6, LINE),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(meta_tbl)
+    story.append(Spacer(1, 6*mm))
 
-        cnv.setFillColor(colors.white)
-        cnv.setFont(font_name, 11)
-        cnv.drawString(left + 48 * mm, H - 31 * mm, "ТЕНТЫ • БРЕЗЕНТ • АНГАРЫ")
+    story.append(Paragraph("Согласно запросу, предлагаем вашему вниманию, ценовое предложение:", base))
+    story.append(Spacer(1, 4*mm))
 
-        cnv.setFillColor(colors.white)
-        cnv.setFont(font_bold, 11)
-        cnv.drawRightString(right, H - 16 * mm, f"КП № {quote_no}")
-        cnv.setFont(font_name, 9)
-        cnv.drawRightString(right, H - 22 * mm, f"Дата: {now:%d.%m.%Y}")
-
-        cnv.setFont(font_name, 9)
-        cnv.drawRightString(right, H - header_h + 6 * mm, f"{company_phone}   |   {company_email}")
-
-        return H - header_h - 10 * mm
-
-    y = header()
-
-    # ---- Поставщик/Клиент ----
-    box_h = 26 * mm
-    gap = 6 * mm
-    mid = (left + right) / 2
-
-    def box(x1, y1, x2, y2):
-        cnv.setFillColor(colors.white)
-        cnv.setStrokeColor(LINE)
-        cnv.roundRect(x1, y1, x2 - x1, y2 - y1, 6, stroke=1, fill=1)
-
-    box(left, y - box_h, mid - gap / 2, y)
-    box(mid + gap / 2, y - box_h, right, y)
-
-    cnv.setFillColor(TEXT)
-    cnv.setFont(font_bold, 10)
-    cnv.drawString(left + 8, y - 10, "Поставщик")
-    cnv.setFont(font_name, 9)
-    cnv.drawString(left + 8, y - 22, company_name)
-    cnv.setFillColor(MUTED)
-    cnv.drawString(left + 8, y - 34, f"Тел: {company_phone}")
-    cnv.drawString(left + 8, y - 44, f"Email: {company_email}")
-
-    cnv.setFillColor(TEXT)
-    cnv.setFont(font_bold, 10)
-    cnv.drawString(mid + gap / 2 + 8, y - 10, "Клиент")
-    cnv.setFont(font_name, 9)
-    cnv.drawString(mid + gap / 2 + 8, y - 22, client_name)
-    cnv.setFillColor(MUTED)
-    cnv.drawString(mid + gap / 2 + 8, y - 34, f"Контакт: {client_contact}")
-    cnv.drawString(mid + gap / 2 + 8, y - 44, f"Тел: {client_phone}")
-
-    y -= (box_h + 10 * mm)
-
-    # ---- Шапка таблицы (НИЧЕГО НЕ НАЛЕЗЕТ) ----
-    def table_header():
-        nonlocal y
-        h = 10 * mm
-        cnv.setFillColor(BRAND_DARK)
-        cnv.roundRect(left, y - h, table_w, h, 5, stroke=0, fill=1)
-
-        cnv.setStrokeColor(GOLD)
-        cnv.setLineWidth(1)
-        cnv.line(left, y - h, right, y - h)
-
-        # Заголовки по центру каждой колонки
-        draw_center(x_no_l, x_no_r, y - 7 * mm, "№", font_bold, 9)
-        cnv.setFillColor(colors.white)
-        cnv.setFont(font_bold, 9)
-        cnv.drawString(x_name_l + 3, y - 7 * mm, "Наименование")
-        draw_center(x_unit_l, x_unit_r, y - 7 * mm, "Ед.", font_bold, 9)
-        draw_center(x_price_l, x_price_r, y - 7 * mm, "Цена", font_bold, 9)
-        draw_center(x_qty_l, x_qty_r, y - 7 * mm, "Кол-во", font_bold, 9)
-        draw_center(x_sum_l, x_sum_r, y - 7 * mm, "Сумма", font_bold, 9)
-
-        y -= (h + 2 * mm)
-
-    def new_page():
-        nonlocal y
-        cnv.showPage()
-        y = header()
-        table_header()
-
-    table_header()
-
-    # ---- Строки ----
-    row_h = 9 * mm
+    # --- Таблица товаров: теперь НИЧЕГО не “наезжает” ---
+    # Колонки: №, Наименование, Характеристика(описание), Ед.изм., Цена, Кол-во, Сумма
+    tbl_data: List[List[Any]] = []
+    tbl_data.append([
+        Paragraph("<b>№</b>", ParagraphStyle("th", parent=base, fontName=FONTS["bold"], textColor=colors.white)),
+        Paragraph("<b>Наименование</b>", ParagraphStyle("th", parent=base, fontName=FONTS["bold"], textColor=colors.white)),
+        Paragraph("<b>Характеристика</b>", ParagraphStyle("th", parent=base, fontName=FONTS["bold"], textColor=colors.white)),
+        Paragraph("<b>Ед.изм.</b>", ParagraphStyle("th", parent=base, fontName=FONTS["bold"], textColor=colors.white)),
+        Paragraph("<b>Цена</b>", ParagraphStyle("th", parent=base, fontName=FONTS["bold"], textColor=colors.white)),
+        Paragraph("<b>Кол-во</b>", ParagraphStyle("th", parent=base, fontName=FONTS["bold"], textColor=colors.white)),
+        Paragraph("<b>Сумма</b>", ParagraphStyle("th", parent=base, fontName=FONTS["bold"], textColor=colors.white)),
+    ])
 
     for i, it in enumerate(items, start=1):
-        if y < 55 * mm:
-            new_page()
-
-        if i % 2 == 0:
-            cnv.setFillColor(ZEBRA)
-            cnv.rect(left, y - row_h + 1, table_w, row_h, stroke=0, fill=1)
-
-        name = str(it.get("name") or "").strip()
-        unit = str(it.get("unit") or "").strip()
-        price = to_num(it.get("price"), 0.0)
+        name = safe(it.get("name"))
+        desc = safe(it.get("desc"))  # <- редактируемое описание из UI
+        unit = safe(it.get("unit"))
+        price = to_num(it.get("price"), 0.0)  # <- редактируемая цена из UI
         qty = to_num(it.get("qty"), 0.0)
         disc = to_num(it.get("discount"), 0.0)
         line_sum = qty * price * (1 - disc / 100.0)
 
-        cnv.setFillColor(TEXT)
-        cnv.setFont(font_name, 9)
+        tbl_data.append([
+            Paragraph(str(i), base),
+            Paragraph(name, base),
+            Paragraph(desc if desc else "", small),
+            Paragraph(unit, base),
+            Paragraph(money(price), base),
+            Paragraph(fmt_qty(qty), base),
+            Paragraph(money(line_sum), base),
+        ])
 
-        cnv.drawString(x_no_l + 3, y - 6 * mm, str(i))
+    # Итоговая строка (как “ИТОГО”)
+    tbl_data.append([
+        "",
+        "",
+        "",
+        "",
+        "",
+        Paragraph("<b>ИТОГО</b>", ParagraphStyle("it", parent=base, fontName=FONTS["bold"])),
+        Paragraph(f"<b>{money(totals['total'])}</b>", ParagraphStyle("it2", parent=base, fontName=FONTS["bold"])),
+    ])
 
-        # обрезаем по ширине, чтобы не лезло в "Ед."
-        max_name_width = (x_name_r - 6) - (x_name_l + 3)
-        show_name = name
-        while cnv.stringWidth(show_name, font_name, 9) > max_name_width and len(show_name) > 4:
-            show_name = show_name[:-1]
-        if show_name != name:
-            show_name = show_name[:-3] + "..."
-        cnv.drawString(x_name_l + 3, y - 6 * mm, show_name)
+    # ширины колонок (под А4)
+    col_widths = [8*mm, 55*mm, 60*mm, 14*mm, 20*mm, 16*mm, 22*mm]
 
-        cnv.setFillColor(MUTED)
-        cnv.drawCentredString((x_unit_l + x_unit_r) / 2, y - 6 * mm, unit)
+    items_tbl = Table(tbl_data, colWidths=col_widths, repeatRows=1)
+    items_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), BRAND_DARK),
+        ("LINEBELOW", (0, 0), (-1, 0), 1.2, GOLD),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
 
-        cnv.setFillColor(TEXT)
-        cnv.drawRightString(x_price_r - 3, y - 6 * mm, money(price))
-        cnv.drawRightString(x_qty_r - 3, y - 6 * mm, fmt_qty(qty))
-        cnv.drawRightString(x_sum_r - 3, y - 6 * mm, money(line_sum))
+        ("BOX", (0, 0), (-1, -2), 0.6, LINE),
+        ("INNERGRID", (0, 0), (-1, -2), 0.4, LINE),
 
-        y -= row_h
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (3, 1), (3, -1), "CENTER"),
+        ("ALIGN", (4, 1), (6, -1), "RIGHT"),
 
-    # линия под таблицей
-    cnv.setStrokeColor(LINE)
-    cnv.setLineWidth(1)
-    cnv.line(left, y, right, y)
-    y -= 10 * mm
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
 
-    # ---- Итоги ----
-    box_w = 90 * mm
-    box_h2 = 34 * mm
-    box_x = right - box_w
-    box_y = y - box_h2
+        # зебра-строки
+        ("ROWBACKGROUNDS", (0, 1), (-1, -3), [colors.white, ZEBRA]),
 
-    cnv.setFillColor(colors.white)
-    cnv.setStrokeColor(LINE)
-    cnv.roundRect(box_x, box_y, box_w, box_h2, 6, stroke=1, fill=1)
+        # строка ИТОГО
+        ("SPAN", (0, -1), (4, -1)),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.white),
+        ("LINEABOVE", (0, -1), (-1, -1), 1.0, LINE),
+        ("ALIGN", (5, -1), (6, -1), "RIGHT"),
+    ]))
+    story.append(items_tbl)
+    story.append(Spacer(1, 6*mm))
 
-    cnv.setFillColor(TEXT)
-    cnv.setFont(font_bold, 10)
-    cnv.drawString(box_x + 10, box_y + box_h2 - 10 * mm, "Итоги")
+    # --- Срок действия КП ---
+    story.append(Paragraph(f"<b>Срок действия КП:</b> {validity_days} дней", base))
+    story.append(Spacer(1, 2*mm))
 
-    cnv.setFont(font_name, 9)
-    cnv.drawString(box_x + 10, box_y + box_h2 - 18 * mm, "Сумма:")
-    cnv.drawRightString(box_x + box_w - 10, box_y + box_h2 - 18 * mm, money(totals["subtotal"]))
+    # --- Доп. условия как в КП Оп ---
+    if supply_terms:
+        story.append(Paragraph(f"<b>Срок поставки:</b> {supply_terms}", base))
+    if payment_terms:
+        story.append(Paragraph(f"<b>Условия оплаты:</b> {payment_terms}", base))
+    if note_block:
+        story.append(Spacer(1, 2*mm))
+        story.append(Paragraph(note_block, small))
 
-    cnv.drawString(box_x + 10, box_y + box_h2 - 25 * mm, f"НДС ({vat_rate}%):")
-    cnv.drawRightString(box_x + box_w - 10, box_y + box_h2 - 25 * mm, money(totals["vat"]))
+    story.append(Spacer(1, 6*mm))
+    story.append(Paragraph("С уважением", base))
+    story.append(Paragraph("<b>Директор</b>", base))
 
-    cnv.setFont(font_bold, 10)
-    cnv.drawString(box_x + 10, box_y + 6 * mm, "Итого:")
-    cnv.drawRightString(box_x + box_w - 10, box_y + 6 * mm, money(totals["total"]))
+    # --- Сборка PDF ---
+    doc.build(story)
 
-    y = box_y - 10 * mm
-
-    cnv.setFillColor(TEXT)
-    cnv.setFont(font_bold, 9)
-    cnv.drawString(left, y, f"Срок действия КП: {validity_days} дней")
-
-    # footer
-    cnv.setStrokeColor(GOLD)
-    cnv.setLineWidth(1)
-    cnv.line(left, 14 * mm, right, 14 * mm)
-
-    cnv.setFillColor(BRAND_DARK)
-    cnv.setFont(font_name, 8.5)
-    cnv.drawString(left, 9 * mm, f"{company_name} • {company_phone} • {company_email}")
-
-    cnv.save()
     return FileResponse(path=str(out_path), filename=out_path.name, media_type="application/pdf")
