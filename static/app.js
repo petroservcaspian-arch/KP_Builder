@@ -1,280 +1,243 @@
 // static/app.js
-// Полная исправленная версия: поиск с подсказками + стрелки/Enter + корзина КП + PDF без "body stream already read"
+const $ = (sel) => document.querySelector(sel);
 
-let timer = null;
-let items = [];
-
-// подсказки (выбор клавиатурой)
-let suggestList = [];
-let activeIndex = -1;
-
-const el = (id) => document.getElementById(id);
-
-function fmt(n) {
-  const x = Number(n || 0);
-  return x.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+function money(n) {
+  const v = Number(n || 0);
+  return v.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function calc() {
-  const vatRate = Number(el("vat_rate").value || 0);
-  let subtotal = 0;
-
-  items.forEach((it) => {
-    const qty = Number(it.qty || 0);
-    const price = Number(it.price || 0);
-    const disc = Number(it.discount || 0);
-    it.line = qty * price * (1 - disc / 100);
-    subtotal += it.line;
-  });
-
-  const vat = subtotal * (vatRate / 100);
-  const total = subtotal + vat;
-
-  el("subtotal").textContent = fmt(subtotal);
-  el("vat").textContent = fmt(vat);
-  el("total").textContent = fmt(total);
+function num(x, def = 0) {
+  const v = Number(String(x ?? "").replace(/\s/g, "").replace(",", "."));
+  return Number.isFinite(v) ? v : def;
 }
 
-function renderTable() {
-  const body = el("itemsBody");
-  body.innerHTML = "";
-
-  items.forEach((it, idx) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>
-        <div><b>${it.name}</b></div>
-        <div class="muted small">${it.group || ""}</div>
-      </td>
-      <td>${it.unit || ""}</td>
-      <td>${fmt(it.price)} ${it.currency || ""}</td>
-      <td><input class="kpInput" value="${it.qty}" data-i="${idx}" data-f="qty"></td>
-      <td><input class="kpInput" value="${it.discount}" data-i="${idx}" data-f="discount"></td>
-      <td>${fmt(it.line || 0)}</td>
-      <td class="del" data-del="${idx}" title="Удалить">×</td>
-    `;
-    body.appendChild(tr);
-  });
-
-  body.querySelectorAll("input").forEach((inp) => {
-    inp.addEventListener("input", (e) => {
-      const i = Number(e.target.dataset.i);
-      const f = e.target.dataset.f;
-      items[i][f] = e.target.value;
-      calc();
-      renderTable();
-    });
-  });
-
-  body.querySelectorAll("[data-del]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const i = Number(btn.dataset.del);
-      items.splice(i, 1);
-      calc();
-      renderTable();
-    });
-  });
-
-  calc();
+function stripHtml(s) {
+  if (!s) return "";
+  return String(s).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function addItem(prod) {
-  // если уже добавлен — увеличим количество
-  const existing = items.find((x) => x.id === prod.id);
-  if (existing) {
-    existing.qty = Number(existing.qty || 0) + 1;
-  } else {
-    items.push({
-      id: prod.id,
-      name: prod.name,
-      unit: prod.unit,
-      price: Number(prod.price || 0),
-      currency: prod.currency || "",
-      group: prod.group || "",
-      qty: 1,
-      discount: 0,
-      line: 0,
-    });
-  }
-  renderTable();
-}
+let cart = []; // {id,name,description,image_url,unit,price,qty,discount}
 
-async function doSearch(q) {
-  const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+async function apiSearch(q) {
+  const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=20`);
   return await r.json();
 }
 
-function setActive(i) {
-  activeIndex = i;
-  const box = el("suggest");
-  [...box.querySelectorAll(".sugItem")].forEach((node, idx) => {
-    node.classList.toggle("active", idx === activeIndex);
+function recalc() {
+  let subtotal = 0;
+  for (const it of cart) {
+    const qty = num(it.qty, 0);
+    const price = num(it.price, 0);
+    const disc = num(it.discount, 0);
+    subtotal += qty * price * (1 - disc / 100);
+  }
+  const vatRate = num($("#vat_rate")?.value, 0);
+  const vat = subtotal * (vatRate / 100);
+  const total = subtotal + vat;
+
+  $("#sum_subtotal").textContent = money(subtotal);
+  $("#sum_vat").textContent = money(vat);
+  $("#sum_total").textContent = money(total);
+}
+
+function renderCart() {
+  const host = $("#cart");
+  host.innerHTML = "";
+
+  cart.forEach((it, idx) => {
+    const row = document.createElement("div");
+    row.className = "kp-row";
+
+    row.innerHTML = `
+      <div class="kp-cell kp-prod">
+        <div class="kp-prod-title">${it.name}</div>
+        <div class="kp-prod-sub">${it.group || ""}</div>
+        <textarea class="kp-desc" rows="2" placeholder="Краткое описание (редактируемое)">${it.description || ""}</textarea>
+        ${it.image_url ? `<div class="kp-link"><a href="${it.image_url}" target="_blank" rel="noreferrer">Фото</a></div>` : ``}
+      </div>
+
+      <div class="kp-cell kp-unit">${it.unit || ""}</div>
+
+      <div class="kp-cell kp-price">
+        <input class="kp-inp" type="text" value="${money(it.price)}" data-k="price" data-i="${idx}">
+        <div class="kp-curr">KZT</div>
+      </div>
+
+      <div class="kp-cell kp-qty">
+        <input class="kp-inp" type="number" min="0" step="1" value="${it.qty ?? 1}" data-k="qty" data-i="${idx}">
+      </div>
+
+      <div class="kp-cell kp-disc">
+        <input class="kp-inp" type="number" min="0" step="1" value="${it.discount ?? 0}" data-k="discount" data-i="${idx}">
+      </div>
+
+      <div class="kp-cell kp-sum" id="line_${idx}"></div>
+
+      <div class="kp-cell kp-del">
+        <button class="kp-x" data-del="${idx}">×</button>
+      </div>
+    `;
+
+    host.appendChild(row);
+
+    // line sum
+    const qty = num(it.qty, 0);
+    const price = num(it.price, 0);
+    const disc = num(it.discount, 0);
+    const s = qty * price * (1 - disc / 100);
+    row.querySelector(`#line_${idx}`).textContent = money(s);
+
+    // description binding
+    row.querySelector(".kp-desc").addEventListener("input", (e) => {
+      cart[idx].description = stripHtml(e.target.value); // чистим теги даже если вставили
+      recalc();
+    });
+  });
+
+  // bind inputs
+  host.querySelectorAll("input.kp-inp").forEach(inp => {
+    inp.addEventListener("input", (e) => {
+      const i = Number(e.target.dataset.i);
+      const k = e.target.dataset.k;
+      if (k === "price") {
+        cart[i].price = num(e.target.value, 0);
+      } else if (k === "qty") {
+        cart[i].qty = num(e.target.value, 0);
+      } else if (k === "discount") {
+        cart[i].discount = num(e.target.value, 0);
+      }
+      renderCart();
+      recalc();
+    });
+  });
+
+  // delete
+  host.querySelectorAll("button.kp-x").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.dataset.del);
+      cart.splice(i, 1);
+      renderCart();
+      recalc();
+    });
+  });
+
+  recalc();
+}
+
+function renderResults(list) {
+  const host = $("#results");
+  host.innerHTML = "";
+  list.forEach(item => {
+    const card = document.createElement("div");
+    card.className = "res-card";
+    card.innerHTML = `
+      <div class="res-title">${item.name}</div>
+      <div class="res-sub">${item.group || ""}</div>
+      <div class="res-desc">${item.description ? item.description : ""}</div>
+      <div class="res-meta">
+        <span>${item.unit || ""}</span>
+        <span>${money(item.price)} ${item.currency || ""}</span>
+      </div>
+      <button class="res-add">Добавить</button>
+    `;
+    card.querySelector(".res-add").addEventListener("click", () => {
+      cart.push({
+        id: item.id,
+        name: item.name,
+        group: item.group || "",
+        description: item.description || "",
+        image_url: item.image_url || "",
+        unit: item.unit || "",
+        price: item.price || 0,
+        qty: 1,
+        discount: 0
+      });
+      renderCart();
+      recalc();
+    });
+    host.appendChild(card);
   });
 }
 
-function renderSuggest(list) {
-  suggestList = list || [];
-  activeIndex = suggestList.length ? 0 : -1;
+async function onSearch() {
+  const q = $("#q").value.trim();
+  if (q.length < 2) return;
+  const list = await apiSearch(q);
+  renderResults(list);
+}
 
-  const box = el("suggest");
-  if (!suggestList.length) {
-    box.innerHTML = `<div class="sugItem"><div class="muted">Ничего не найдено</div></div>`;
+async function downloadPdf() {
+  if (!cart.length) {
+    alert("Добавь хотя бы 1 позицию");
     return;
   }
 
-  box.innerHTML = "";
-  suggestList.forEach((prod, idx) => {
-    const row = document.createElement("div");
-    row.className = "sugItem";
-    row.innerHTML = `
-      <div class="sugLeft">
-        <div class="sugName"><b>${prod.name}</b></div>
-        <div class="sugMeta">${prod.group || ""} • ${prod.unit || ""} • ${prod.availability || ""}</div>
-      </div>
-      <div class="sugRight">
-        <div><b>${fmt(prod.price)} ${prod.currency || ""}</b></div>
-        <div class="sugMeta">Enter/клик — добавить</div>
-      </div>
-    `;
-    row.addEventListener("mouseenter", () => setActive(idx));
-    row.addEventListener("click", () => addItem(prod));
-    box.appendChild(row);
+  const payload = {
+    quote_no: $("#quote_no")?.value?.trim() || "",
+    vat_rate: num($("#vat_rate")?.value, 0),
+    validity_days: num($("#validity_days")?.value, 3),
+    payment_terms: $("#payment_terms")?.value || "",
+    company: {
+      name: "TENT GLOBAL SOLUTION",
+      phone: "+77785665001",
+      email: "tentatyrau@gmail.com"
+    },
+    client: {
+      type: ($("#client_type")?.value || "").trim(),
+      contact: ($("#client_contact")?.value || "").trim(),
+      phone: ($("#client_phone")?.value || "").trim()
+    },
+    items: cart.map(it => ({
+      id: it.id,
+      name: it.name,
+      description: stripHtml(it.description || ""),
+      image_url: (it.image_url || "").trim(),
+      unit: it.unit,
+      price: num(it.price, 0),
+      qty: num(it.qty, 0),
+      discount: num(it.discount, 0)
+    }))
+  };
+
+  const r = await fetch("/api/quote/pdf", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
   });
 
-  setActive(activeIndex);
-}
+  if (!r.ok) {
+    const txt = await r.text();
+    alert("Ошибка PDF: " + txt);
+    return;
+  }
 
-function clearSuggest() {
-  el("suggest").innerHTML = "";
-  suggestList = [];
-  activeIndex = -1;
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = (payload.quote_no && payload.quote_no.trim()) ? `${payload.quote_no}.pdf` : "KP.pdf";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function init() {
-  // очистка поиска
-  el("btnClear").addEventListener("click", () => {
-    el("search").value = "";
-    clearSuggest();
-    el("search").focus();
+  $("#btn_search").addEventListener("click", onSearch);
+  $("#q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") onSearch();
   });
 
-  // живой поиск
-  el("search").addEventListener("input", () => {
-    const q = el("search").value.trim();
-    clearTimeout(timer);
+  $("#btn_pdf").addEventListener("click", downloadPdf);
 
-    if (q.length < 2) {
-      clearSuggest();
-      return;
-    }
-
-    timer = setTimeout(async () => {
-      try {
-        const list = await doSearch(q);
-        renderSuggest(list);
-      } catch (e) {
-        el("suggest").innerHTML = `<div class="sugItem"><div class="muted">Ошибка поиска</div></div>`;
-      }
-    }, 160);
+  // пересчёт при смене НДС/прочего
+  ["vat_rate", "validity_days", "payment_terms"].forEach(id => {
+    const el = $("#" + id);
+    if (el) el.addEventListener("input", recalc);
   });
 
-  // управление подсказками клавиатурой
-  el("search").addEventListener("keydown", (e) => {
-    if (!suggestList.length) return;
-
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setActive(Math.min(activeIndex + 1, suggestList.length - 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setActive(Math.max(activeIndex - 1, 0));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (activeIndex >= 0) addItem(suggestList[activeIndex]);
-    } else if (e.key === "Escape") {
-      clearSuggest();
-    }
-  });
-
-  // PDF (исправлено: тело ответа читаем ОДИН раз)
-  el("btnPDF").addEventListener("click", async () => {
-    el("status").textContent = "Формируем PDF...";
-    try {
-      const payload = {
-        company: {
-          name: el("c_name").value || "",
-          phone: el("c_phone").value || "",
-          email: el("c_email").value || "",
-        },
-        client: {
-          name: el("cl_name").value || "",
-          contact: el("cl_contact").value || "",
-          phone: el("cl_phone").value || "",
-        },
-        vat_rate: Number(el("vat_rate").value || 0),
-        validity_days: Number(el("validity").value || 3),
-        payment_terms: el("terms").value || "",
-        delivery_terms: "",
-        notes: "",
-        items: items.map((x) => ({
-          id: x.id,
-          name: x.name,
-          unit: x.unit,
-          price: Number(x.price || 0),
-          currency: x.currency || "",
-          qty: Number(x.qty || 0),
-          discount: Number(x.discount || 0),
-          group: x.group || "",
-        })),
-      };
-
-      if (payload.items.length === 0) {
-        el("status").textContent = "Добавь хотя бы 1 позицию.";
-        return;
-      }
-
-      const r = await fetch("/api/quote/pdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!r.ok) {
-        // читаем только text() один раз
-        const txt = await r.text();
-        let msg = txt;
-
-        // если это JSON с error/traceback — аккуратно вытащим error
-        try {
-          const obj = JSON.parse(txt);
-          msg = obj.error || obj.detail || txt;
-        } catch (_) {}
-
-        el("status").textContent = "Ошибка PDF: " + msg;
-        return;
-      }
-
-      // OK: читаем blob (PDF)
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "KP.pdf";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-
-      URL.revokeObjectURL(url);
-      el("status").textContent = "PDF готов.";
-    } catch (e) {
-      el("status").textContent = "Ошибка: " + (e?.message || e);
-    }
-  });
-
-  renderTable();
+  renderCart();
+  recalc();
 }
 
-init();
-
-
+document.addEventListener("DOMContentLoaded", init);
