@@ -223,7 +223,8 @@ async function downloadPdf() {
 }
 
 function init() {
-  $("#btn_search").addEventListener("click", onSearch);
+  const btnSearch = $("#btn_search");
+if (btnSearch) btnSearch.addEventListener("click", onSearch);
   $("#q").addEventListener("keydown", (e) => {
     if (e.key === "Enter") onSearch();
   });
