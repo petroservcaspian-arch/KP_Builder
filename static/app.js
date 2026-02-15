@@ -225,11 +225,15 @@ async function downloadPdf() {
 function init() {
   const btnSearch = $("#btn_search");
 if (btnSearch) btnSearch.addEventListener("click", onSearch);
-  $("#q").addEventListener("keydown", (e) => {
+  const qEl = $("#q");
+if (qEl) {
+  qEl.addEventListener("keydown", (e) => {
     if (e.key === "Enter") onSearch();
   });
-
-  $("#btn_pdf").addEventListener("click", downloadPdf);
+}
+  
+  const btnPdf = $("#btn_pdf");
+if (btnPdf) btnPdf.addEventListener("click", downloadPdf);
 
   // пересчёт при смене НДС/прочего
   ["vat_rate", "validity_days", "payment_terms"].forEach(id => {
