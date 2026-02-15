@@ -1,4 +1,4 @@
-// static/app.js
+// static/app.js - ИСПРАВЛЕННАЯ ВЕРСИЯ
 const $ = (sel) => document.querySelector(sel);
 
 function money(n) {
@@ -35,157 +35,162 @@ function recalc() {
   const vat = subtotal * (vatRate / 100);
   const total = subtotal + vat;
 
-  $("#sum_subtotal").textContent = money(subtotal);
-  $("#sum_vat").textContent = money(vat);
-  $("#sum_total").textContent = money(total);
+  // ИСПРАВЛЕНО: правильные ID элементов
+  const subtotalEl = $("#subtotal");
+  const vatEl = $("#vat");
+  const totalEl = $("#total");
+  
+  if (subtotalEl) subtotalEl.textContent = money(subtotal);
+  if (vatEl) vatEl.textContent = money(vat);
+  if (totalEl) totalEl.textContent = money(total);
 }
 
 function renderCart() {
-  const host = $("#cart");
+  // ИСПРАВЛЕНО: правильный ID таблицы
+  const host = $("#itemsBody");
+  if (!host) return;
+  
   host.innerHTML = "";
 
   cart.forEach((it, idx) => {
-    const row = document.createElement("div");
-    row.className = "kp-row";
+    const row = document.createElement("tr");
+
+    const qty = num(it.qty, 1);
+    const price = num(it.price, 0);
+    const disc = num(it.discount, 0);
+    const lineSum = qty * price * (1 - disc / 100);
 
     row.innerHTML = `
-      <div class="kp-cell kp-prod">
-        <div class="kp-prod-title">${it.name}</div>
-        <div class="kp-prod-sub">${it.group || ""}</div>
-        <textarea class="kp-desc" rows="2" placeholder="Краткое описание (редактируемое)">${it.description || ""}</textarea>
-        ${it.image_url ? `<div class="kp-link"><a href="${it.image_url}" target="_blank" rel="noreferrer">Фото</a></div>` : ``}
-      </div>
-
-      <div class="kp-cell kp-unit">${it.unit || ""}</div>
-
-      <div class="kp-cell kp-price">
-        <input class="kp-inp" type="text" value="${money(it.price)}" data-k="price" data-i="${idx}">
-        <div class="kp-curr">KZT</div>
-      </div>
-
-      <div class="kp-cell kp-qty">
-        <input class="kp-inp" type="number" min="0" step="1" value="${it.qty ?? 1}" data-k="qty" data-i="${idx}">
-      </div>
-
-      <div class="kp-cell kp-disc">
-        <input class="kp-inp" type="number" min="0" step="1" value="${it.discount ?? 0}" data-k="discount" data-i="${idx}">
-      </div>
-
-      <div class="kp-cell kp-sum" id="line_${idx}"></div>
-
-      <div class="kp-cell kp-del">
-        <button class="kp-x" data-del="${idx}">×</button>
-      </div>
+      <td>
+        <div style="font-weight: 600; margin-bottom: 4px;">${it.name}</div>
+        <textarea class="input" rows="2" placeholder="Описание" data-idx="${idx}" data-field="description" style="width: 100%; font-size: 13px;">${it.description || ""}</textarea>
+        ${it.image_url ? `<div style="margin-top: 4px;"><a href="${it.image_url}" target="_blank" style="font-size: 12px; color: #2563eb;">📷 Фото</a></div>` : ''}
+      </td>
+      <td>${it.unit || ""}</td>
+      <td>
+        <input class="input" type="number" min="0" step="0.01" value="${price}" data-idx="${idx}" data-field="price" style="width: 100px;">
+      </td>
+      <td>
+        <input class="input" type="number" min="0" step="1" value="${qty}" data-idx="${idx}" data-field="qty" style="width: 70px;">
+      </td>
+      <td>
+        <input class="input" type="number" min="0" max="100" step="1" value="${disc}" data-idx="${idx}" data-field="discount" style="width: 70px;">
+      </td>
+      <td style="text-align: right; font-weight: 600;">${money(lineSum)}</td>
+      <td>
+        <button class="btn ghost" data-del="${idx}" style="padding: 4px 8px;">×</button>
+      </td>
     `;
 
     host.appendChild(row);
 
-    // line sum
-    const qty = num(it.qty, 0);
-    const price = num(it.price, 0);
-    const disc = num(it.discount, 0);
-    const s = qty * price * (1 - disc / 100);
-    row.querySelector(`#line_${idx}`).textContent = money(s);
-
-    // description binding
-    row.querySelector(".kp-desc").addEventListener("input", (e) => {
-      cart[idx].description = stripHtml(e.target.value); // чистим теги даже если вставили
-      recalc();
+    // Обработчики изменений
+    row.querySelectorAll("input, textarea").forEach(inp => {
+      inp.addEventListener("input", (e) => {
+        const i = Number(e.target.dataset.idx);
+        const field = e.target.dataset.field;
+        
+        if (field === "price") {
+          cart[i].price = num(e.target.value, 0);
+        } else if (field === "qty") {
+          cart[i].qty = num(e.target.value, 0);
+        } else if (field === "discount") {
+          cart[i].discount = num(e.target.value, 0);
+        } else if (field === "description") {
+          cart[i].description = stripHtml(e.target.value);
+        }
+        
+        renderCart();
+        recalc();
+      });
     });
-  });
 
-  // bind inputs
-  host.querySelectorAll("input.kp-inp").forEach(inp => {
-    inp.addEventListener("input", (e) => {
-      const i = Number(e.target.dataset.i);
-      const k = e.target.dataset.k;
-      if (k === "price") {
-        cart[i].price = num(e.target.value, 0);
-      } else if (k === "qty") {
-        cart[i].qty = num(e.target.value, 0);
-      } else if (k === "discount") {
-        cart[i].discount = num(e.target.value, 0);
-      }
-      renderCart();
-      recalc();
-    });
-  });
-
-  // delete
-  host.querySelectorAll("button.kp-x").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const i = Number(btn.dataset.del);
-      cart.splice(i, 1);
-      renderCart();
-      recalc();
-    });
+    // Кнопка удаления
+    const delBtn = row.querySelector("[data-del]");
+    if (delBtn) {
+      delBtn.addEventListener("click", () => {
+        const i = Number(delBtn.dataset.del);
+        cart.splice(i, 1);
+        renderCart();
+        recalc();
+      });
+    }
   });
 
   recalc();
 }
 
-function renderResults(list) {
-  const host = $("#results");
+// НОВАЯ ФУНКЦИЯ: отображение результатов поиска
+function renderSuggestions(list) {
+  const host = $("#suggest");
+  if (!host) return;
+  
   host.innerHTML = "";
+  
+  if (list.length === 0) {
+    host.innerHTML = '<div style="padding: 16px; text-align: center; color: #9ca3af;">Ничего не найдено</div>';
+    return;
+  }
+
   list.forEach(item => {
-    const card = document.createElement("div");
-    card.className = "res-card";
-    card.innerHTML = `
-      <div class="res-title">${item.name}</div>
-      <div class="res-sub">${item.group || ""}</div>
-      <div class="res-desc">${item.description ? item.description : ""}</div>
-      <div class="res-meta">
-        <span>${item.unit || ""}</span>
-        <span>${money(item.price)} ${item.currency || ""}</span>
+    const div = document.createElement("div");
+    div.className = "suggest-item";
+    
+    div.innerHTML = `
+      <div style="font-weight: 600; margin-bottom: 4px;">${item.name}</div>
+      <div style="display: flex; justify-content: space-between; font-size: 14px;">
+        <span style="color: #6b7280;">${item.group_name || ""}</span>
+        <span style="color: #2563eb; font-weight: 600;">${money(item.price)} ${item.currency || "KZT"}</span>
       </div>
-      <button class="res-add">Добавить</button>
     `;
-    card.querySelector(".res-add").addEventListener("click", () => {
+    
+    div.addEventListener("click", () => {
+      // Берем первое фото из списка
+      const firstImage = (item.image_url || "").split(",")[0].trim();
+      
       cart.push({
         id: item.id,
         name: item.name,
-        group: item.group || "",
-        description: item.description || "",
-        image_url: item.image_url || "",
+        description: stripHtml(item.description || ""),
+        image_url: firstImage,
         unit: item.unit || "",
         price: item.price || 0,
         qty: 1,
         discount: 0
       });
+      
       renderCart();
-      recalc();
+      host.innerHTML = "";
+      
+      const searchInput = $("#search");
+      if (searchInput) searchInput.value = "";
     });
-    host.appendChild(card);
+    
+    host.appendChild(div);
   });
-}
-
-async function onSearch() {
-  const q = $("#q").value.trim();
-  if (q.length < 2) return;
-  const list = await apiSearch(q);
-  renderResults(list);
 }
 
 async function downloadPdf() {
   if (!cart.length) {
-    alert("Добавь хотя бы 1 позицию");
+    alert("Добавьте хотя бы 1 позицию в КП");
     return;
   }
 
+  // ИСПРАВЛЕНО: правильные ID всех элементов
   const payload = {
     quote_no: $("#quote_no")?.value?.trim() || "",
     vat_rate: num($("#vat_rate")?.value, 0),
-    validity_days: num($("#validity_days")?.value, 3),
-    payment_terms: $("#payment_terms")?.value || "",
+    validity_days: num($("#validity")?.value, 3),  // ИСПРАВЛЕНО
+    payment_terms: $("#terms")?.value || "",  // ИСПРАВЛЕНО
     company: {
-      name: "TENT GLOBAL SOLUTION",
-      phone: "+77785665001",
-      email: "tentatyrau@gmail.com"
+      name: $("#c_name")?.value || "TENT GLOBAL SOLUTION",
+      phone: $("#c_phone")?.value || "+77785665001",
+      email: $("#c_email")?.value || "tentatyrau@gmail.com"
     },
     client: {
-      type: ($("#client_type")?.value || "").trim(),
-      contact: ($("#client_contact")?.value || "").trim(),
-      phone: ($("#client_phone")?.value || "").trim()
+      type: "",
+      contact: $("#cl_contact")?.value?.trim() || "",  // ИСПРАВЛЕНО
+      phone: $("#cl_phone")?.value?.trim() || ""  // ИСПРАВЛЕНО
     },
     items: cart.map(it => ({
       id: it.id,
@@ -199,47 +204,95 @@ async function downloadPdf() {
     }))
   };
 
-  const r = await fetch("/api/quote/pdf", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
+  const statusEl = $("#status");
+  if (statusEl) statusEl.textContent = "Генерация PDF...";
 
-  if (!r.ok) {
-    const txt = await r.text();
-    alert("Ошибка PDF: " + txt);
-    return;
+  try {
+    const r = await fetch("/api/quote/pdf", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!r.ok) {
+      const txt = await r.text();
+      alert("Ошибка создания PDF: " + txt);
+      if (statusEl) statusEl.textContent = "";
+      return;
+    }
+
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = (payload.quote_no && payload.quote_no.trim()) ? `${payload.quote_no}.pdf` : "KP.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    if (statusEl) {
+      statusEl.textContent = "✅ PDF скачан!";
+      setTimeout(() => { statusEl.textContent = ""; }, 3000);
+    }
+  } catch (err) {
+    alert("Ошибка: " + err.message);
+    if (statusEl) statusEl.textContent = "";
+  }
+}
+
+// ИСПРАВЛЕННАЯ ФУНКЦИЯ ИНИЦИАЛИЗАЦИИ
+function init() {
+  // Поиск с задержкой (debounce)
+  const searchInput = $("#search");
+  if (searchInput) {
+    let searchTimeout;
+    searchInput.addEventListener("input", async (e) => {
+      clearTimeout(searchTimeout);
+      const q = e.target.value.trim();
+      
+      if (q.length >= 2) {
+        searchTimeout = setTimeout(async () => {
+          try {
+            const results = await apiSearch(q);
+            renderSuggestions(results);
+          } catch (err) {
+            console.error("Ошибка поиска:", err);
+          }
+        }, 300);
+      } else {
+        const suggest = $("#suggest");
+        if (suggest) suggest.innerHTML = "";
+      }
+    });
   }
 
-  const blob = await r.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = (payload.quote_no && payload.quote_no.trim()) ? `${payload.quote_no}.pdf` : "KP.pdf";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
+  // Кнопка очистки
+  const btnClear = $("#btnClear");
+  if (btnClear) {
+    btnClear.addEventListener("click", () => {
+      if (searchInput) searchInput.value = "";
+      const suggest = $("#suggest");
+      if (suggest) suggest.innerHTML = "";
+    });
+  }
 
-function init() {
-  const btnSearch = $("#btn_search");
-if (btnSearch) btnSearch.addEventListener("click", onSearch);
-  const qEl = $("#q");
-if (qEl) {
-  qEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") onSearch();
-  });
-}
+  // Кнопка PDF - ИСПРАВЛЕНО: правильный ID
+  const btnPdf = $("#btnPDF");
+  if (btnPdf) {
+    btnPdf.addEventListener("click", downloadPdf);
+  }
+
+  // Пересчет при изменении НДС/срока
+  const vatRate = $("#vat_rate");
+  if (vatRate) {
+    vatRate.addEventListener("input", recalc);
+  }
   
-  const btnPdf = $("#btn_pdf");
-if (btnPdf) btnPdf.addEventListener("click", downloadPdf);
-
-  // пересчёт при смене НДС/прочего
-  ["vat_rate", "validity_days", "payment_terms"].forEach(id => {
-    const el = $("#" + id);
-    if (el) el.addEventListener("input", recalc);
-  });
+  const validity = $("#validity");
+  if (validity) {
+    validity.addEventListener("input", recalc);
+  }
 
   renderCart();
   recalc();
